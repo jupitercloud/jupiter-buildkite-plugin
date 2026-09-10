@@ -172,7 +172,7 @@ setup_post() {
 }
 
 setup_root() {
-    make_fixture 'components/app with spaces'
+    make_fixture "${1:-components/app with spaces}"
     printf 'base\n' > "$ROOT/tracked.txt"
     git -C "$ROOT" add tracked.txt
     git -C "$ROOT" commit -qm 'Root base'
@@ -347,7 +347,7 @@ test_pre_success() {
     assert_success
     assert_file "$CHECKOUT/jupiter/snapshot-marker"
     [[ -d "$CHECKOUT/app" ]] || fail 'temporary app checkout was not created'
-    assert_file "$CHECKOUT/keep-me"
+    assert_absent "$CHECKOUT/keep-me"
     assert_file "$SNAPSHOT/snapshot-marker"
     assert_log btrfs subvolume snapshot "$SNAPSHOT" "$CHECKOUT/jupiter"
     assert_line "JUPITER_ROOT=$CHECKOUT/jupiter" "$TEST_CASE_DIR/hook.env"
@@ -404,7 +404,98 @@ test_pre_existing() {
     assert_absent "$CHECKOUT/jupiter/stale"
     assert_absent "$CHECKOUT/app/stale"
     assert_file "$CHECKOUT/jupiter/snapshot-marker"
-    assert_file "$CHECKOUT/keep-me"
+    assert_absent "$CHECKOUT/keep-me"
+}
+
+setup_stale_workspace() {
+    setup_root components/guix
+    SNAPSHOT="$ROOT"
+    CHECKOUT="$TEST_CASE_DIR/checkout with spaces"
+    export SNAPSHOT CHECKOUT
+    git clone -q "$SNAPSHOT" "$CHECKOUT"
+    # Model the competing environment/project files in the failed job's layout.
+    local file
+    for file in .envrc .envrc.root project.scm; do
+        printf 'snapshot environment\n' > "$SNAPSHOT/$file"
+        printf 'stale environment\n' > "$CHECKOUT/$file"
+    done
+    export BUILDKITE_BUILD_CHECKOUT_PATH="$CHECKOUT"
+    export BUILDKITE_PLUGIN_JUPITER_SNAPSHOT_PATH="$SNAPSHOT"
+}
+
+assert_clean_workspace() {
+    local entry
+    for entry in "$CHECKOUT"/* "$CHECKOUT"/.[!.]* "$CHECKOUT"/..?*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        case "$entry" in
+            "$CHECKOUT/jupiter"|"$CHECKOUT/app") ;;
+            *) fail "stale outer workspace entry: $entry" ;;
+        esac
+    done
+}
+
+test_pre_stale_workspace() {
+    setup_stale_workspace
+    source_hook pre-checkout
+    assert_success
+    assert_clean_workspace
+    assert_file "$CHECKOUT/jupiter/.git/HEAD"
+    assert_file "$CHECKOUT/jupiter/.envrc"
+    assert_file "$CHECKOUT/jupiter/.envrc.root"
+    assert_file "$CHECKOUT/jupiter/project.scm"
+    assert_equal "$SNAPSHOT_SUB_HEAD" "$(git -C "$CHECKOUT/jupiter/components/guix" rev-parse HEAD)"
+    assert_file "$SNAPSHOT/.git/HEAD"
+}
+
+test_pre_stale_workspace_failure() {
+    setup_stale_workspace
+    export TEST_BTRFS_FAIL=snapshot
+    source_hook pre-checkout
+    assert_failure
+    assert_equal "$ROOT_HEAD" "$(git -C "$CHECKOUT" rev-parse HEAD)"
+    assert_file "$CHECKOUT/.envrc"
+    assert_file "$CHECKOUT/.envrc.root"
+    assert_file "$CHECKOUT/project.scm"
+    [[ -d "$CHECKOUT/components/guix" ]] || fail 'old submodule directory was removed'
+    assert_absent "$CHECKOUT/jupiter"
+    assert_absent "$CHECKOUT/app"
+}
+
+test_pre_cleanup_symlinks() {
+    setup_pre
+    ln -s -- "$SNAPSHOT" "$CHECKOUT/snapshot-link"
+    ln -s -- "$SNAPSHOT" "$CHECKOUT/.hidden-link"
+    ln -s -- "$TEST_CASE_DIR/nonexistent" "$CHECKOUT/dangling-link"
+    mkdir -p -- "$CHECKOUT/..hidden" "$CHECKOUT/jupiter-old"
+    source_hook pre-checkout
+    assert_success
+    assert_clean_workspace
+    assert_file "$SNAPSHOT/snapshot-marker"
+    assert_file "$CHECKOUT/jupiter/snapshot-marker"
+}
+
+test_root_workspace_lifecycle() {
+    setup_stale_workspace
+    # Use both real hooks, with a local clone standing in for Buildkite checkout.
+    capture bash --noprofile --norc -c '
+        cd -- "$CHECKOUT" || exit
+        source "$PLUGIN_DIR/hooks/pre-checkout"
+        git clone -q "$APP" "$BUILDKITE_BUILD_CHECKOUT_PATH"
+        source "$PLUGIN_DIR/hooks/post-checkout"
+        env > "$TEST_CASE_DIR/hook.env"
+        pwd -P > "$TEST_CASE_DIR/hook.cwd"
+    '
+    assert_success
+    assert_clean_workspace
+    ROOT="$CHECKOUT/jupiter"
+    SUB="$ROOT/components/guix"
+    assert_root_integrated
+    assert_absent "$CHECKOUT/app"
+    assert_file "$ROOT/.envrc"
+    assert_file "$ROOT/project.scm"
+    assert_line "JUPITER_ROOT=$ROOT" "$TEST_CASE_DIR/hook.env"
+    assert_line "BUILDKITE_BUILD_CHECKOUT_PATH=$ROOT" "$TEST_CASE_DIR/hook.env"
+    assert_equal "$ROOT" "$(< "$TEST_CASE_DIR/hook.cwd")"
 }
 
 test_pre_canonical_paths() {
@@ -590,7 +681,11 @@ run_test 'pre-checkout: empty snapshot option falls back to environment' test_pr
 run_test 'pre-checkout: snapshot option overrides environment' test_pre_snapshot_precedence
 run_test 'pre-checkout: missing snapshot configuration aborts safely' test_pre_snapshot_missing unset
 run_test 'pre-checkout: empty snapshot configuration aborts safely' test_pre_snapshot_missing empty
-run_test 'pre-checkout: replaces snapshot/app but preserves siblings' test_pre_existing
+run_test 'pre-checkout: replaces snapshot/app and clears outer workspace' test_pre_existing
+run_test 'pre-checkout: removes stale outer repository and retains populated snapshot' test_pre_stale_workspace
+run_test 'pre-checkout: snapshot failure preserves stale outer repository' test_pre_stale_workspace_failure
+run_test 'pre-checkout: clears hidden entries and symlinks without following targets' test_pre_cleanup_symlinks
+run_test 'root workspace: preparation and integration leave one populated root' test_root_workspace_lifecycle
 run_test 'pre-checkout: canonicalizes symlink and dot paths' test_pre_canonical_paths
 run_test 'pre-checkout: rejects relative checkout' test_pre_invalid_checkout relative/checkout
 run_test 'pre-checkout: rejects root checkout' test_pre_invalid_checkout /

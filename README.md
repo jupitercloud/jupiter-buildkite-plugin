@@ -43,8 +43,9 @@ checks it out detached in the snapshot root. Build commands then run at
 ## How It Works
 
 1. `pre-checkout` snapshots the published Jupiter subvolume into
-   `<original-checkout>/jupiter`, exports `JUPITER_ROOT`, and redirects Buildkite's
-   normal checkout to `<original-checkout>/app`.
+   `<original-checkout>/jupiter`, clears all other contents of the original
+   checkout directory, exports `JUPITER_ROOT`, and redirects Buildkite's normal
+   checkout to `<original-checkout>/app`.
 2. Buildkite checks out the repository using its normal credentials and checkout
    settings. The plugin does not replace Buildkite's checkout implementation.
 3. `post-checkout` matches that checkout's `origin` URL against Jupiter's
@@ -65,11 +66,25 @@ Neither mode recursively updates submodules.
 The `ci-app` remote is retained for reuse but points to the now-removed temporary
 checkout; it is not an upstream remote for subsequent fetches.
 
-The build workspace is retained after the job for diagnostics and normal agent
-workspace management. On reuse, the plugin deletes the old `jupiter` Btrfs
-subvolume and replaces it with a fresh snapshot, and resets the temporary `app`
-directory. These two names are reserved for the plugin; other files in the
-original checkout directory are left alone. No post-job cleanup hook is added.
+The original checkout directory is a disposable, plugin-managed workspace. On
+each preparation, the plugin deletes the old `jupiter` Btrfs subvolume and creates
+a fresh snapshot. Only after snapshot creation succeeds does it remove every
+other entry, including hidden files, old Git metadata, environment files, and
+the temporary `app` checkout. This prevents an old outer repository from
+surrounding the snapshot and interfering with repository/environment discovery.
+Snapshot creation failure preserves those outer workspace contents.
+
+After preparation the layout is:
+
+```text
+<original-checkout>/
+├── app/                  # Fresh Buildkite checkout
+└── jupiter/              # Populated snapshot
+    └── components/
+```
+
+Integration removes `app/` on success. The build workspace is retained after the
+job for diagnostics and normal agent workspace management.
 
 ## Configuration
 
@@ -110,6 +125,7 @@ respect the relocation and must not replace the workspace after integration.
   Submodule Git metadata must be self-contained in the snapshot, not linked to
   paths outside it.
 - An absolute, agent-managed checkout path, not shared by concurrent jobs.
+  All contents are disposable; store persistent files outside this directory.
   Checkout must be enabled. Reference this plugin remotely, not as a vendored
   relative-path plugin, because preparation must run before checkout.
 - The component's origin must match a top-level Jupiter submodule, unless

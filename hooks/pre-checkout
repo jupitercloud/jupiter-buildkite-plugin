@@ -35,7 +35,17 @@ fi
 
 echo "--- Preparing Jupiter snapshot"
 sudo -n /run/current-system/profile/bin/btrfs subvolume snapshot "$snapshot_path" "$checkout_path/jupiter"
-rm -rf -- "$checkout_path/app"
+
+# The outer directory is a disposable workspace, not another repository root.
+# Keep the new snapshot and clear stale checkouts only after snapshot creation.
+(
+  shopt -s dotglob nullglob
+  for entry in "$checkout_path"/*; do
+    if [[ "$entry" != "$checkout_path/jupiter" ]]; then
+      rm -rf -- "$entry"
+    fi
+  done
+)
 mkdir -p -- "$checkout_path/app"
 export JUPITER_ROOT="$checkout_path/jupiter"
 export BUILDKITE_BUILD_CHECKOUT_PATH="$checkout_path/app"
