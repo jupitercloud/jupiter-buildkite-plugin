@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -ge 3 && "$1" == subvolume ]] || exit 90
+operation=$2
+shift 2
+if [[ "${1:-}" == -- ]]; then
+    shift
+fi
+printf '%q ' btrfs subvolume "$operation" "$@" >> "$TEST_MOCK_LOG"
+printf '\n' >> "$TEST_MOCK_LOG"
+[[ "${TEST_BTRFS_FAIL:-}" != "$operation" ]] || exit 71
+
+case "$operation" in
+    show)
+        [[ $# == 1 && -d "$1" ]] || exit 97
+        ;;
+    snapshot)
+        # Reject -r as well as any unexpected arguments: snapshots must be writable.
+        [[ $# == 2 ]] || exit 91
+        source=$(realpath -- "$1")
+        destination=$(realpath -m -- "$2")
+        [[ "$source" == "$TEST_CASE_DIR/"* && "$destination" == "$TEST_CASE_DIR/"* ]] || exit 92
+        [[ -d "$source" && ! -e "$destination" ]] || exit 93
+        mkdir -- "$destination"
+        cp -a -- "$source/." "$destination/"
+        ;;
+    delete)
+        [[ $# == 1 ]] || exit 94
+        destination=$(realpath -- "$1")
+        [[ "$destination" == "$TEST_CASE_DIR/"* && -d "$destination" ]] || exit 95
+        rm -rf -- "$destination"
+        ;;
+    *) exit 96 ;;
+esac

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${BUILDKITE_BUILD_CHECKOUT_PATH:?Buildkite checkout path is required}"
+snapshot_path="${BUILDKITE_PLUGIN_JUPITER_SNAPSHOT_PATH:-${BUILDKITE_JUPITER_SNAPSHOT_PATH:-}}"
+: "${snapshot_path:?Set the Jupiter plugin snapshot-path option or BUILDKITE_JUPITER_SNAPSHOT_PATH}"
+if [[ "$BUILDKITE_BUILD_CHECKOUT_PATH" != /* || "$snapshot_path" != /* ]]; then
+  echo "Jupiter requires absolute checkout and snapshot paths" >&2
+  exit 1
+fi
+
+checkout_path="$(realpath -m -- "$BUILDKITE_BUILD_CHECKOUT_PATH")"
+snapshot_path="$(realpath -e -- "$snapshot_path")"
+if [[ "$checkout_path" == / || "$checkout_path" == "$snapshot_path" ||
+      "$snapshot_path" == "$checkout_path/"* || "$checkout_path" == "$snapshot_path/"* ]]; then
+  echo "Jupiter checkout and published snapshot paths must not overlap" >&2
+  exit 1
+fi
+
+# Fail before changing the workspace if the snapshot or tools are unavailable.
+command -v git guile >/dev/null
+btrfs subvolume show "$snapshot_path" >/dev/null
+mkdir -p -- "$checkout_path"
+if [[ -e "$checkout_path/jupiter" || -L "$checkout_path/jupiter" ]]; then
+  if [[ -L "$checkout_path/jupiter" ]]; then
+    echo "Refusing to replace a symlink at $checkout_path/jupiter" >&2
+    exit 1
+  fi
+  btrfs subvolume delete "$checkout_path/jupiter"
+fi
+
+echo "--- Preparing Jupiter snapshot"
+btrfs subvolume snapshot "$snapshot_path" "$checkout_path/jupiter"
+rm -rf -- "$checkout_path/app"
+mkdir -p -- "$checkout_path/app"
+export JUPITER_ROOT="$checkout_path/jupiter"
+export BUILDKITE_BUILD_CHECKOUT_PATH="$checkout_path/app"

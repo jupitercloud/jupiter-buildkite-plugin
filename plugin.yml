@@ -1,0 +1,16 @@
+name: Jupiter Integration
+description: Builds a component inside a snapshot of the Jupiter multi-repo
+author: https://github.com/jupitercloud
+requirements:
+  - bash
+  - btrfs
+  - git
+  - guile
+  - realpath
+configuration:
+  properties:
+    snapshot-path:
+      type: string
+      minLength: 1
+      description: Absolute path to the published Jupiter Btrfs subvolume; falls back to BUILDKITE_JUPITER_SNAPSHOT_PATH
+  additionalProperties: false
