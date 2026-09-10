@@ -12,7 +12,7 @@ for command in bash git guile mktemp realpath cp rm mkdir cmp env; do
         exit 1
     }
 done
-for file in hooks/pre-checkout hooks/post-checkout lib/integrate-submodule.scm; do
+for file in hooks/pre-checkout hooks/post-checkout lib/integrate-submodule.scm lib/integrate-root.scm; do
     if [[ ! -f "$PLUGIN_DIR/$file" ]]; then
         printf 'Missing plugin implementation: %s\n' "$PLUGIN_DIR/$file" >&2
         exit 1
@@ -32,6 +32,7 @@ export GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=file
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
 unset BUILDKITE_PLUGIN_JUPITER_SNAPSHOT_PATH
+unset BUILDKITE_PLUGIN_JUPITER_ROOT_REPO
 unset BUILDKITE_JUPITER_SNAPSHOT_PATH
 unset BUILDKITE_BUILD_CHECKOUT_PATH JUPITER_ROOT BASH_ENV ENV
 export PATH="$TESTS_DIR/mocks:$PATH"
@@ -168,6 +169,90 @@ setup_post() {
     export BUILDKITE_BUILD_CHECKOUT_PATH="$APP" JUPITER_ROOT="$ROOT"
     printf 'exit 99\n' > "$SUB/.envrc"
     printf 'unrelated checkout data\n' > "$TEST_CASE_DIR/keep-me"
+}
+
+setup_root() {
+    make_fixture 'components/app with spaces'
+    printf 'base\n' > "$ROOT/tracked.txt"
+    git -C "$ROOT" add tracked.txt
+    git -C "$ROOT" commit -qm 'Root base'
+    ROOT_HEAD=$(git -C "$ROOT" rev-parse HEAD)
+    # The snapshot's component has advanced beyond the root's recorded gitlink.
+    printf 'snapshot component\n' > "$SUB/tracked.txt"
+    git -C "$SUB" commit -qam 'Snapshot component revision'
+    SNAPSHOT_SUB_HEAD=$(git -C "$SUB" rev-parse HEAD)
+    APP="$TEST_CASE_DIR/root checkout with spaces"
+    git clone -q "$ROOT" "$APP"
+    git -C "$APP" remote set-url origin https://git.example.invalid/jupiter/jupiter
+    detached_commit
+    git -C "$ROOT" config submodule.recurse true
+    export BUILDKITE_BUILD_CHECKOUT_PATH="$APP" JUPITER_ROOT="$ROOT"
+    export BUILDKITE_PLUGIN_JUPITER_ROOT_REPO=true
+}
+
+assert_root_integrated() {
+    assert_equal "$APP_HEAD" "$(git -C "$ROOT" rev-parse HEAD)"
+    assert_equal 'detached change' "$(< "$ROOT/tracked.txt")"
+    assert_equal "$SNAPSHOT_SUB_HEAD" "$(git -C "$SUB" rev-parse HEAD)"
+    assert_equal 'snapshot component' "$(< "$SUB/tracked.txt")"
+    if git -C "$ROOT" symbolic-ref -q HEAD; then
+        fail 'integrated root HEAD must be detached'
+    fi
+}
+
+test_root_helper() {
+    setup_root
+    if [[ "$1" == existing-remote ]]; then
+        git -C "$ROOT" remote add ci-app "$TEST_CASE_DIR/stale-checkout"
+    fi
+    capture guile --no-auto-compile "$PLUGIN_DIR/lib/integrate-root.scm" "$APP" "$ROOT"
+    assert_success
+    assert_raw_path "$ROOT"
+    assert_root_integrated
+    assert_equal "$APP" "$(git -C "$ROOT" remote get-url ci-app)"
+    assert_file "$APP/tracked.txt"
+}
+
+test_root_without_submodules() {
+    APP="$TEST_CASE_DIR/root checkout"
+    ROOT="$TEST_CASE_DIR/snapshot root"
+    git init -q -b main "$APP"
+    printf 'base\n' > "$APP/tracked.txt"
+    git -C "$APP" add tracked.txt
+    git -C "$APP" commit -qm base
+    git clone -q "$APP" "$ROOT"
+    git -C "$APP" checkout -q --detach
+    printf 'new root\n' > "$APP/tracked.txt"
+    git -C "$APP" commit -qam 'Root revision'
+    capture guile --no-auto-compile "$PLUGIN_DIR/lib/integrate-root.scm" "$APP" "$ROOT"
+    assert_success
+    assert_raw_path "$ROOT"
+    assert_equal "$(git -C "$APP" rev-parse HEAD)" "$(git -C "$ROOT" rev-parse HEAD)"
+    assert_equal 'new root' "$(< "$ROOT/tracked.txt")"
+}
+
+test_post_root() {
+    setup_root
+    source_hook post-checkout
+    assert_success
+    assert_root_integrated
+    assert_line "BUILDKITE_BUILD_CHECKOUT_PATH=$ROOT" "$TEST_CASE_DIR/hook.env"
+    assert_line "JUPITER_ROOT=$ROOT" "$TEST_CASE_DIR/hook.env"
+    assert_equal "$ROOT" "$(< "$TEST_CASE_DIR/hook.cwd")"
+    assert_absent "$APP"
+    assert_empty "$TEST_MOCK_LOG"
+}
+
+test_post_root_failure() {
+    setup_root
+    printf 'uncommitted root work\n' > "$ROOT/tracked.txt"
+    source_hook post-checkout
+    assert_failure
+    assert_file "$APP/tracked.txt"
+    assert_equal "$APP_HEAD" "$(git -C "$ROOT" rev-parse FETCH_HEAD)" 'fetch succeeded before checkout failed'
+    assert_equal "$ROOT_HEAD" "$(git -C "$ROOT" rev-parse HEAD)"
+    assert_equal 'uncommitted root work' "$(< "$ROOT/tracked.txt")"
+    assert_equal "$SNAPSHOT_SUB_HEAD" "$(git -C "$SUB" rev-parse HEAD)"
 }
 
 test_helper_normalization() {
@@ -420,6 +505,9 @@ test_pre_btrfs_failure() {
 
 test_post_success() {
     setup_post
+    if [[ "${1:-}" == explicit-false ]]; then
+        export BUILDKITE_PLUGIN_JUPITER_ROOT_REPO=false
+    fi
     direnv() { return 99; }
     export -f direnv
     detached_commit
@@ -493,6 +581,9 @@ run_test 'helper: failed checkout preserves local work and app' test_helper_chec
 run_test 'helper: parent traversal rejected before Git sync' test_helper_escape traversal
 run_test 'helper: symlink escape rejected before Git sync' test_helper_escape symlink
 run_test 'helper: super-repository itself is not a submodule' test_helper_self_path
+run_test 'root helper: detached root transfers while snapshot components stay populated' test_root_helper new-remote
+run_test 'root helper: stale ci-app remote is updated' test_root_helper existing-remote
+run_test 'root helper: no origin or .gitmodules required, paths with spaces' test_root_without_submodules
 run_test 'pre-checkout: writable snapshot and exported paths without privileged inspection' test_pre_success
 run_test 'pre-checkout: snapshot path falls back to environment' test_pre_snapshot_environment unset-option
 run_test 'pre-checkout: empty snapshot option falls back to environment' test_pre_snapshot_environment empty-option
@@ -514,6 +605,9 @@ run_test 'pre-checkout: non-directory snapshot source preserves workspace' test_
 run_test 'pre-checkout: deletion failure preserves existing snapshot' test_pre_btrfs_failure delete
 run_test 'pre-checkout: sudo denial fails without deleting workspace' test_pre_sudo_failure
 run_test 'post-checkout: integrates, exports, and changes cwd without loading .envrc' test_post_success
+run_test 'post-checkout: root-repo false selects component integration' test_post_success explicit-false
+run_test 'post-checkout: root-repo true integrates and exports snapshot root' test_post_root
+run_test 'post-checkout: root checkout failure preserves app and local work' test_post_root_failure
 run_test 'post-checkout: unmatched app is preserved on failure' test_post_helper_failure unmatched
 run_test 'post-checkout: checkout failure preserves app and local work' test_post_helper_failure checkout
 

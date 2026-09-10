@@ -14,4 +14,8 @@ configuration:
       type: string
       minLength: 1
       description: Absolute path to the published Jupiter Btrfs subvolume; falls back to BUILDKITE_JUPITER_SNAPSHOT_PATH
+    root-repo:
+      type: boolean
+      default: false
+      description: Integrate the checkout into the Jupiter snapshot root instead of a matching submodule
   additionalProperties: false

@@ -1,6 +1,7 @@
 # Jupiter Buildkite Plugin
 
-Run a component build inside a writable Btrfs snapshot of the Jupiter multi-repo.
+Run a component or root repository build inside a writable Btrfs snapshot of the
+Jupiter multi-repo.
 This provides the sibling repositories, Guix channels, and `JUPITER_ROOT` layout
 that component builds need, without cloning the entire multi-repo for each job.
 
@@ -23,25 +24,44 @@ The `snapshot-path` option can be omitted when `BUILDKITE_JUPITER_SNAPSHOT_PATH`
 is set in the pipeline environment or agent environment. Uploaded steps must declare the
 plugin themselves; they do not inherit it from the upload step.
 
+For builds of the Jupiter root repository, set `root-repo: true`:
+
+```yaml
+steps:
+  - label: Build Jupiter
+    command: bb build
+    plugins:
+      - jupitercloud/jupiter#<commit-sha>:
+          snapshot-path: /home/buildkite/snapshots/jupiter
+          root-repo: true
+```
+
+This uses the fresh checkout as a local upstream, fetches its exact `HEAD`, and
+checks it out detached in the snapshot root. Build commands then run at
+`JUPITER_ROOT` with `BUILDKITE_BUILD_CHECKOUT_PATH` pointing there.
+
 ## How It Works
 
 1. `pre-checkout` snapshots the published Jupiter subvolume into
    `<original-checkout>/jupiter`, exports `JUPITER_ROOT`, and redirects Buildkite's
    normal checkout to `<original-checkout>/app`.
-2. Buildkite checks out the component using its normal credentials and checkout
+2. Buildkite checks out the repository using its normal credentials and checkout
    settings. The plugin does not replace Buildkite's checkout implementation.
 3. `post-checkout` matches that checkout's `origin` URL against Jupiter's
-   `.gitmodules`. SSH, SCP-style SSH, HTTP(S), and Git URLs are normalized so
+   `.gitmodules` (or selects the snapshot root when `root-repo: true`).
+   SSH, SCP-style SSH, HTTP(S), and Git URLs are normalized so
    differing transports and SSH ports can identify the same repository.
-4. The helper fetches the exact component `HEAD` through a local `ci-app` remote
-   and checks it out detached in the matching submodule. This also transfers
-   Gerrit patchset commits that are not reachable from a branch.
-5. The hook changes into the integrated component, updates
+4. The helper fetches the exact checkout `HEAD` through a local `ci-app` remote
+   and checks it out detached in the matching submodule or snapshot root. This
+   also transfers Gerrit patchset commits that are not reachable from a branch.
+5. The hook changes into the integrated repository, updates
    `BUILDKITE_BUILD_CHECKOUT_PATH`, and removes the temporary app checkout. If
    integration fails, the temporary checkout is retained for diagnosis.
 
-The snapshot's other repositories and the parent gitlink remain unchanged. The
-plugin does not recursively update the tested component's nested submodules.
+In component mode, the snapshot's other repositories and the parent gitlink
+remain unchanged. In root mode, root files and gitlinks follow the tested commit,
+while populated submodule working trees retain their snapshot revisions.
+Neither mode recursively updates submodules.
 The `ci-app` remote is retained for reuse but points to the now-removed temporary
 checkout; it is not an upstream remote for subsequent fetches.
 
@@ -56,6 +76,7 @@ original checkout directory are left alone. No post-job cleanup hook is added.
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `snapshot-path` | string | `BUILDKITE_JUPITER_SNAPSHOT_PATH` environment variable | Absolute path to an existing published Jupiter Btrfs subvolume. |
+| `root-repo` | boolean | `false` | Fetch and check out the tested commit in the snapshot root instead of matching a submodule. |
 
 An explicit `snapshot-path` takes precedence over `BUILDKITE_JUPITER_SNAPSHOT_PATH`.
 There is no hard-coded snapshot location: if neither provides a non-empty value,
@@ -91,8 +112,9 @@ respect the relocation and must not replace the workspace after integration.
 - An absolute, agent-managed checkout path, not shared by concurrent jobs.
   Checkout must be enabled. Reference this plugin remotely, not as a vendored
   relative-path plugin, because preparation must run before checkout.
-- The component's origin must match a top-level Jupiter submodule. Do not use
-  this plugin for the Jupiter super-repository itself or its snapshot publisher.
+- The component's origin must match a top-level Jupiter submodule, unless
+  `root-repo: true` is set for the Jupiter super-repository. Root mode does not
+  require an origin URL or `.gitmodules` for integration.
 - Normal agent credentials and fetch settings must make the requested revision
   available to Buildkite. Gerrit triggering and fetching `refs/changes/...` remain
   the responsibility of the existing Gerrit/agent integration; this plugin
@@ -122,9 +144,9 @@ Remove the old Jupiter `environment`, `pre-checkout`, `post-checkout`, and
 enabling the plugin. Running both would prepare/integrate the workspace twice.
 Deploying this repository does not remove previously copied agent hooks.
 
-Add the plugin explicitly to the component's upload and build steps. Do not
-apply it globally or to the snapshot-publishing pipeline. No existing pipelines
-are changed by this migration.
+Add the plugin explicitly to upload and build steps that need the Jupiter
+snapshot layout, setting `root-repo: true` for root repository steps.
+No existing pipelines are changed by this migration.
 
 Replace the old agent `environment` hook with the separate `jupitercloud/direnv`
 plugin on steps that need it, following the ordering described above.

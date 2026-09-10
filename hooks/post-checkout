@@ -4,13 +4,19 @@ set -euo pipefail
 : "${BUILDKITE_BUILD_CHECKOUT_PATH:?Buildkite checkout path is required}"
 : "${JUPITER_ROOT:?Jupiter pre-checkout hook must run first}"
 
-echo "--- Integrating component into Jupiter"
+integration_helper=integrate-submodule.scm
+if [[ "${BUILDKITE_PLUGIN_JUPITER_ROOT_REPO:-false}" == true ]]; then
+  echo "--- Integrating root repository into Jupiter"
+  integration_helper=integrate-root.scm
+else
+  echo "--- Integrating component into Jupiter"
+fi
 app_repo="$BUILDKITE_BUILD_CHECKOUT_PATH"
-submodule_repo_path="$(guile --no-auto-compile \
-  "$(dirname "${BASH_SOURCE[0]}")/../lib/integrate-submodule.scm" \
+integrated_repo_path="$(guile --no-auto-compile \
+  "$(dirname "${BASH_SOURCE[0]}")/../lib/$integration_helper" \
   "$app_repo" "$JUPITER_ROOT")"
 
 # Publish the real checkout path for later hooks, commands, and artifacts.
-cd "$submodule_repo_path"
-export BUILDKITE_BUILD_CHECKOUT_PATH="$submodule_repo_path"
+cd "$integrated_repo_path"
+export BUILDKITE_BUILD_CHECKOUT_PATH="$integrated_repo_path"
 rm -rf -- "$app_repo"

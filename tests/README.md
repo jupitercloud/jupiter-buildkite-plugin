@@ -17,6 +17,10 @@ The actual Scheme helper runs against local Git submodules, including a detached
 commit absent from every branch and absent from the destination object database.
 Coverage includes URL normalization, raw path output with spaces, unmatched URLs,
 path containment, and preservation of local work after checkout failure.
+Root integration coverage includes detached commits, new and stale local remotes,
+repositories without an origin or `.gitmodules`, and retaining populated snapshot
+components even when `submodule.recurse` is enabled. Hook tests exercise
+`root-repo: true`, explicit `false`, root path exports, and failed root checkout.
 
 Each hook is sourced in a separate Bash process. Tests inspect exported variables
 and cwd. The sudo mock accepts only `sudo -n /run/current-system/profile/bin/btrfs`
