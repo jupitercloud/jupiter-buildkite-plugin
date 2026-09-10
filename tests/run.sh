@@ -104,7 +104,7 @@ setup_case() {
     : > "$TEST_MOCK_LOG"
     export HOME="$TEST_CASE_DIR/home" XDG_CONFIG_HOME="$TEST_CASE_DIR/home/.config"
     mkdir -p -- "$XDG_CONFIG_HOME"
-    unset TEST_BTRFS_FAIL
+    unset TEST_BTRFS_FAIL TEST_SUDO_FAIL TEST_BTRFS_VIA_SUDO
 }
 
 make_fixture() {
@@ -266,6 +266,7 @@ test_pre_success() {
     assert_file "$SNAPSHOT/snapshot-marker"
     assert_log btrfs subvolume snapshot "$SNAPSHOT" "$CHECKOUT/jupiter"
     assert_line "JUPITER_ROOT=$CHECKOUT/jupiter" "$TEST_CASE_DIR/hook.env"
+    assert_log sudo -n /run/current-system/profile/bin/btrfs subvolume snapshot "$SNAPSHOT" "$CHECKOUT/jupiter"
     assert_line "BUILDKITE_BUILD_CHECKOUT_PATH=$CHECKOUT/app" "$TEST_CASE_DIR/hook.env"
 }
 
@@ -313,6 +314,7 @@ test_pre_existing() {
     source_hook pre-checkout
     assert_success
     assert_log btrfs subvolume delete "$CHECKOUT/jupiter"
+    assert_log sudo -n /run/current-system/profile/bin/btrfs subvolume delete "$CHECKOUT/jupiter"
     assert_log btrfs subvolume snapshot "$SNAPSHOT" "$CHECKOUT/jupiter"
     assert_absent "$CHECKOUT/jupiter/stale"
     assert_absent "$CHECKOUT/app/stale"
@@ -364,6 +366,38 @@ test_pre_overlap() {
     assert_failure
     assert_empty "$TEST_MOCK_LOG"
     assert_file "$CHECKOUT/keep-me"
+}
+
+test_pre_invalid_snapshot() {
+    setup_pre
+    mkdir -p -- "$CHECKOUT/jupiter" "$CHECKOUT/app"
+    printf 'existing snapshot\n' > "$CHECKOUT/jupiter/stale"
+    printf 'existing checkout\n' > "$CHECKOUT/app/stale"
+    if [[ "$1" == missing ]]; then
+        export BUILDKITE_PLUGIN_JUPITER_SNAPSHOT_PATH="$TEST_CASE_DIR/missing-snapshot"
+    else
+        export BUILDKITE_PLUGIN_JUPITER_SNAPSHOT_PATH="$SNAPSHOT/snapshot-marker"
+    fi
+    source_hook pre-checkout
+    assert_failure
+    assert_empty "$TEST_MOCK_LOG"
+    assert_file "$CHECKOUT/jupiter/stale"
+    assert_file "$CHECKOUT/app/stale"
+    assert_file "$CHECKOUT/keep-me"
+}
+
+test_pre_sudo_failure() {
+    setup_pre
+    mkdir -p -- "$CHECKOUT/jupiter" "$CHECKOUT/app"
+    printf 'existing snapshot\n' > "$CHECKOUT/jupiter/stale"
+    printf 'existing checkout\n' > "$CHECKOUT/app/stale"
+    export TEST_SUDO_FAIL=1
+    source_hook pre-checkout
+    assert_failure
+    assert_log sudo -n /run/current-system/profile/bin/btrfs subvolume delete "$CHECKOUT/jupiter"
+    assert_file "$CHECKOUT/jupiter/stale"
+    assert_file "$CHECKOUT/app/stale"
+    assert_file "$SNAPSHOT/snapshot-marker"
 }
 
 test_pre_btrfs_failure() {
@@ -459,7 +493,7 @@ run_test 'helper: failed checkout preserves local work and app' test_helper_chec
 run_test 'helper: parent traversal rejected before Git sync' test_helper_escape traversal
 run_test 'helper: symlink escape rejected before Git sync' test_helper_escape symlink
 run_test 'helper: super-repository itself is not a submodule' test_helper_self_path
-run_test 'pre-checkout: writable snapshot and exported paths' test_pre_success
+run_test 'pre-checkout: writable snapshot and exported paths without privileged inspection' test_pre_success
 run_test 'pre-checkout: snapshot path falls back to environment' test_pre_snapshot_environment unset-option
 run_test 'pre-checkout: empty snapshot option falls back to environment' test_pre_snapshot_environment empty-option
 run_test 'pre-checkout: snapshot option overrides environment' test_pre_snapshot_precedence
@@ -475,8 +509,10 @@ run_test 'pre-checkout: rejects source inside checkout' test_pre_overlap source-
 run_test 'pre-checkout: rejects checkout inside source' test_pre_overlap checkout-inside
 run_test 'pre-checkout: rejects overlap through symlink' test_pre_overlap symlink
 run_test 'pre-checkout: snapshot failure propagates' test_pre_btrfs_failure snapshot
-run_test 'pre-checkout: source validation failure preserves workspace' test_pre_btrfs_failure show
+run_test 'pre-checkout: missing snapshot source preserves workspace' test_pre_invalid_snapshot missing
+run_test 'pre-checkout: non-directory snapshot source preserves workspace' test_pre_invalid_snapshot file
 run_test 'pre-checkout: deletion failure preserves existing snapshot' test_pre_btrfs_failure delete
+run_test 'pre-checkout: sudo denial fails without deleting workspace' test_pre_sudo_failure
 run_test 'post-checkout: integrates, exports, and changes cwd without loading .envrc' test_post_success
 run_test 'post-checkout: unmatched app is preserved on failure' test_post_helper_failure unmatched
 run_test 'post-checkout: checkout failure preserves app and local work' test_post_helper_failure checkout

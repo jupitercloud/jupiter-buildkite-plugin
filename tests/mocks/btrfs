@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+[[ "${TEST_BTRFS_VIA_SUDO:-}" == 1 ]] || exit 98
 [[ $# -ge 3 && "$1" == subvolume ]] || exit 90
 operation=$2
 shift 2
@@ -13,7 +14,8 @@ printf '\n' >> "$TEST_MOCK_LOG"
 
 case "$operation" in
     show)
-        [[ $# == 1 && -d "$1" ]] || exit 97
+        echo "ERROR: Could not search B-tree: Operation not permitted" >&2
+        exit 1
         ;;
     snapshot)
         # Reject -r as well as any unexpected arguments: snapshots must be writable.

@@ -17,20 +17,24 @@ if [[ "$checkout_path" == / || "$checkout_path" == "$snapshot_path" ||
   exit 1
 fi
 
-# Fail before changing the workspace if the snapshot or tools are unavailable.
-command -v git guile >/dev/null
-btrfs subvolume show "$snapshot_path" >/dev/null
+if [[ ! -d "$snapshot_path" ]]; then
+  echo "Jupiter snapshot path must be a directory: $snapshot_path" >&2
+  exit 1
+fi
+
+# Let snapshot creation validate the subvolume; `show` needs privileged tree searches.
+command -v git guile sudo >/dev/null
 mkdir -p -- "$checkout_path"
 if [[ -e "$checkout_path/jupiter" || -L "$checkout_path/jupiter" ]]; then
   if [[ -L "$checkout_path/jupiter" ]]; then
     echo "Refusing to replace a symlink at $checkout_path/jupiter" >&2
     exit 1
   fi
-  btrfs subvolume delete "$checkout_path/jupiter"
+  sudo -n /run/current-system/profile/bin/btrfs subvolume delete "$checkout_path/jupiter"
 fi
 
 echo "--- Preparing Jupiter snapshot"
-btrfs subvolume snapshot "$snapshot_path" "$checkout_path/jupiter"
+sudo -n /run/current-system/profile/bin/btrfs subvolume snapshot "$snapshot_path" "$checkout_path/jupiter"
 rm -rf -- "$checkout_path/app"
 mkdir -p -- "$checkout_path/app"
 export JUPITER_ROOT="$checkout_path/jupiter"

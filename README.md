@@ -73,14 +73,21 @@ respect the relocation and must not replace the workspace after integration.
 
 ## Agent Requirements
 
-- A self-hosted Linux agent with Bash, Git, Guile, Btrfs tools, and GNU coreutils
-  (including `realpath`) on `PATH`. Component build tools and environment loading
-  are configured separately.
+- A self-hosted Linux agent with Bash, Git, Guile, sudo, and GNU coreutils
+  (including `realpath`) on `PATH`, and Btrfs installed at
+  `/run/current-system/profile/bin/btrfs`. Component build tools and environment
+  loading are configured separately.
 - A populated, writable-snapshot-capable Jupiter Btrfs subvolume, with initialized
   submodules and `.gitmodules`. The source and agent checkout paths must be on
-  the same Btrfs filesystem, must not overlap, and the agent user must have
-  permission to create and delete snapshots. Submodule Git metadata must be
-  self-contained in the snapshot, not linked to paths outside it.
+  the same Btrfs filesystem and must not overlap. Snapshot creation and deletion
+  run through `sudo -n /run/current-system/profile/bin/btrfs`, using the agent's
+  passwordless sudo authorization; all other operations run as the agent user.
+  The snapshot contents must be owned/writable as required by the agent user:
+  sudo does not change the ownership of the source tree's files.
+  The plugin does not use `btrfs subvolume show`, whose metadata searches can
+  require administrative privileges even when snapshot creation is permitted.
+  Submodule Git metadata must be self-contained in the snapshot, not linked to
+  paths outside it.
 - An absolute, agent-managed checkout path, not shared by concurrent jobs.
   Checkout must be enabled. Reference this plugin remotely, not as a vendored
   relative-path plugin, because preparation must run before checkout.
@@ -90,6 +97,15 @@ respect the relocation and must not replace the workspace after integration.
   available to Buildkite. Gerrit triggering and fetching `refs/changes/...` remain
   the responsibility of the existing Gerrit/agent integration; this plugin
   transfers the revision only after Buildkite has checked it out.
+
+The existing Jupiter agent sudoers rule authorizes these commands:
+
+```sudoers
+buildkite ALL=(root) NOPASSWD: /run/current-system/profile/bin/btrfs *
+```
+
+No additional sudo permissions are required. The `-n` flag prevents password
+prompts; authorization failures abort the hook rather than waiting for input.
 
 The plugin is designed for a single-host agent job, not Kubernetes stacks with
 separate checkout/command containers and non-persistent hook environments.
@@ -119,7 +135,7 @@ plugin on steps that need it, following the ordering described above.
 bash tests/run.sh
 ```
 
-The tests use disposable local Git repositories and mocked Btrfs commands.
+The tests use disposable local Git repositories and mocked sudo/Btrfs commands.
 They require Bash, Git, Guile, and coreutils, but no running agent, real Btrfs
 operations, or network access. Real-agent end-to-end validation is a separate
 manual step using a component pipeline.

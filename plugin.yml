@@ -3,7 +3,8 @@ description: Builds a component inside a snapshot of the Jupiter multi-repo
 author: https://github.com/jupitercloud
 requirements:
   - bash
-  - btrfs
+  - /run/current-system/profile/bin/btrfs
+  - sudo
   - git
   - guile
   - realpath
